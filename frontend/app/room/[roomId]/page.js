@@ -226,7 +226,7 @@ export default function RoomPage() {
           <span className="logo-text">Stadium<span className="accent">Sync</span></span>
         </div>
         <div className="header-right">
-          <div className={`ws-dot ${wsConnected ? "connected" : "disconnected"}`} />
+          <div className="ws-dot connected" title="Edge Active" />
           <span className="viewers">👁 {viewers}</span>
           <button className="share-btn" onClick={copyLink} id="copy-room-link">
             {copied ? "✅ Copied!" : "🔗 Copy Room Link"}
