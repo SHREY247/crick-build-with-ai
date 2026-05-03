@@ -32,7 +32,6 @@ export default function RoomPage() {
   const [feed,          setFeed]          = useState([]);
   const [viewers,       setViewers]       = useState(1);
   const [copied,        setCopied]        = useState(false);
-  const [wsConnected,   setWsConnected]   = useState(false);
 
   const [streamState,   setStreamState]   = useState(null);
   const [tickerQueue,   setTickerQueue]   = useState([]);
@@ -50,8 +49,10 @@ export default function RoomPage() {
   const [uploadLoading, setUploadLoading] = useState(false);
   const [uploadMsg,     setUploadMsg]     = useState("Generating...");
 
-  const wsRef         = useRef(null);
-  const feedRef       = useRef(null);
+  const feedScrollRef = useRef(null);
+  const feedDataRef   = useRef([]);
+  
+  useEffect(() => { feedDataRef.current = feed; }, [feed]);
   const imageInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const videoRef      = useRef(null);
@@ -60,36 +61,10 @@ export default function RoomPage() {
   const intervalRef   = useRef(null);
   const requestInFlight = useRef(false);
 
-  // WebSocket
-  useEffect(() => {
-    const ws = new WebSocket(`${WS_BACKEND}/ws/${roomId}`);
-    wsRef.current = ws;
-    ws.onopen  = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      if      (msg.type === "history")       { setFeed(msg.data || []); setViewers(msg.viewers || 1); setTickerQueue(msg.data || []); }
-      else if (msg.type === "commentary")    { 
-        setFeed(prev => [...prev, msg.data]); 
-        setTickerQueue(prev => [...prev, msg.data]);
-        setStreamState(null);
-      }
-      else if (msg.type === "viewer_update") { setViewers(msg.viewers); }
-      else if (msg.type === "stream_start")  {
-        setStreamState({ req_id: msg.req_id, text: "", personality: msg.personality, name: msg.personality_name, emoji: msg.emoji });
-      }
-      else if (msg.type === "stream_chunk")  {
-        setStreamState(prev => prev && prev.req_id === msg.req_id ? { ...prev, text: prev.text + msg.text } : prev);
-      }
-    };
-    const ping = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-    }, 25000);
-    return () => { clearInterval(ping); ws.close(); };
-  }, [roomId]);
+  // WebSockets removed for Vercel Serverless compatibility
 
   useEffect(() => {
-    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    if (feedScrollRef.current) feedScrollRef.current.scrollTop = feedScrollRef.current.scrollHeight;
   }, [feed]);
 
   // Live frame capture
@@ -112,18 +87,44 @@ export default function RoomPage() {
       const b64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
       setLiveStatus("GENERATING");
       setFrameCount(prev => prev + 1);
+      const req_id = Math.random().toString(36).slice(2, 10);
+      const currentP = PERSONALITIES.find(p => p.id === personality);
+      setStreamState({ req_id, text: "", personality: currentP.id, name: currentP.name, emoji: currentP.emoji });
+
+      const history_text = feedDataRef.current.slice(-3).map((item, i) => `${i + 1}. ${item.text}`).join("\n");
       
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({
-          type: "frame",
-          frame_base64: b64,
-          personality: personality,
-          req_id: Math.random().toString(36).slice(2, 10),
-          force_demo: demoSafeMode
-        }));
+      const res = await fetch(`/api/generate-live-frame`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room_id: roomId, personality, frame_base64: b64, force_demo: demoSafeMode, history_text }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        fullText += chunk;
+        setStreamState(prev => prev && prev.req_id === req_id ? { ...prev, text: prev.text + chunk } : prev);
       }
+
+      const finalMsg = {
+        id: req_id,
+        personality: currentP.id,
+        personality_name: currentP.name,
+        emoji: currentP.emoji,
+        text: fullText,
+        timestamp: Math.floor(Date.now() / 1000),
+      };
       
-      setTimeout(() => setLiveStatus("ACTIVE"), 1500);
+      setFeed(prev => [...prev, finalMsg]);
+      setTickerQueue(prev => [...prev, finalMsg]);
+      setStreamState(null);
+      
+      setTimeout(() => setLiveStatus("ACTIVE"), 500);
     } catch (err) {
       console.error("Live frame error:", err);
       setLiveStatus("ERROR");
@@ -175,11 +176,36 @@ export default function RoomPage() {
     const isVideo = !!videoBase64;
     setUploadMsg(isVideo ? "Extracting frames..." : "Generating...");
     try {
-      const endpoint = isVideo ? "/generate-video" : "/generate";
-      const body = isVideo ? { video_base64: videoBase64, personality, room_id: roomId } : { image_base64: imageBase64, personality, room_id: roomId };
-      const res = await fetch(`${BACKEND}${endpoint}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      const data = await res.json();
-      if (!data.success) throw new Error("Failed");
+      const endpoint = isVideo ? "/api/generate-video" : "/api/generate-live-frame";
+      const body = isVideo ? { video_base64: videoBase64, personality, room_id: roomId } : { frame_base64: imageBase64, personality, room_id: roomId };
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      
+      if (isVideo) {
+        const data = await res.json();
+        if (!data.success) throw new Error("Failed");
+        setFeed(prev => [...prev, data.message]);
+        setTickerQueue(prev => [...prev, data.message]);
+      } else {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let fullText = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += decoder.decode(value, { stream: true });
+        }
+        const currentP = PERSONALITIES.find(p => p.id === personality);
+        const finalMsg = {
+          id: Math.random().toString(36).slice(2, 10),
+          personality: currentP.id,
+          personality_name: currentP.name,
+          emoji: currentP.emoji,
+          text: fullText,
+          timestamp: Math.floor(Date.now() / 1000),
+        };
+        setFeed(prev => [...prev, finalMsg]);
+        setTickerQueue(prev => [...prev, finalMsg]);
+      }
     } catch { alert("Error — check backend."); }
     finally { setUploadLoading(false); }
   };
@@ -240,10 +266,11 @@ export default function RoomPage() {
               </div>
             )}
 
-            <div className={`live-status-bar ${statusInfo.cls}`}>
-              <span className="live-status-icon">{statusInfo.icon}</span>
-              <span className="live-status-label">{statusInfo.label}</span>
-              {liveActive && <span className="live-status-interval">{CAPTURE_INTERVAL_MS / 1000}s interval</span>}
+            <div className="status-indicators">
+              <div className={`status-badge ${statusInfo.cls}`}>
+                <span className="s-icon">{statusInfo.icon}</span>
+                {statusInfo.label}
+              </div>
             </div>
 
             <div className="live-actions">
@@ -309,14 +336,12 @@ export default function RoomPage() {
           <div className="card feed-card">
             <div className="feed-header">
               <h3 className="card-title">📡 Live Commentary Feed</h3>
-              {feed.length > 0 && <span className="feed-count">{feed.length} entries</span>}
+              <div className="viewer-count">👁️ {viewers} watching</div>
             </div>
-            <div className="feed" ref={feedRef}>
+            <div className="feed-list" ref={feedScrollRef}>
               {feed.length === 0 ? (
-                <div className="feed-empty">
-                  <span>🎙️</span>
-                  <p>No commentary yet</p>
-                  <p className="feed-empty-sub">Start live camera commentary or upload a frame</p>
+                <div className="empty-feed">
+                  <span className="spinner"></span> Waiting for match events...
                 </div>
               ) : (
                 feed.map((item, i) => {
