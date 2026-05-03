@@ -97,3 +97,4 @@ This prototype does not stream full video to the backend. It samples frames from
 ## Submission Pitch
 
 StadiumSync samples frames from a live camera pointed at a cricket match and uses Gemini Vision to generate shareable, personality-driven commentary in near real time.
+# crick-build-with-ai
