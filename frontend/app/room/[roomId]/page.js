@@ -98,7 +98,10 @@ export default function RoomPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ room_id: roomId, personality, frame_base64: b64, force_demo: demoSafeMode, history_text }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(`HTTP ${res.status}: ${errorData.details || "Unknown error"}`);
+      }
       
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");

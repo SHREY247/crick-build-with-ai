@@ -98,6 +98,6 @@ Analyze this frame. Give me 1-3 sentences of raw text commentary. No JSON. No ma
 
   } catch (error) {
     console.error("Vercel Edge Function Error:", error);
-    return new Response("Error generating live frame", { status: 500 });
+    return new Response(JSON.stringify({ error: "Error generating live frame", details: error.message || error.toString() }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
